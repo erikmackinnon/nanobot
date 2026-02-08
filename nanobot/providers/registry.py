@@ -51,6 +51,10 @@ class ProviderSpec:
     # per-model param overrides, e.g. (("kimi-k2.5", {"temperature": 1.0}),)
     model_overrides: tuple[tuple[str, dict[str, Any]], ...] = ()
 
+    # OAuth providers (for example OpenAI Codex) do not use API keys.
+    is_oauth: bool = False
+    oauth_provider: str = ""
+
     @property
     def label(self) -> str:
         return self.display_name or self.name.title()
@@ -153,6 +157,26 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         default_api_base="",
         strip_model_prefix=False,
         model_overrides=(),
+    ),
+
+    # OpenAI Codex: OAuth-based provider (not routed through LiteLLM).
+    ProviderSpec(
+        name="openai_codex",
+        keywords=("openai-codex", "codex"),
+        env_key="",
+        display_name="OpenAI Codex",
+        litellm_prefix="",
+        skip_prefixes=(),
+        env_extras=(),
+        is_gateway=False,
+        is_local=False,
+        detect_by_key_prefix="",
+        detect_by_base_keyword="",
+        default_api_base="https://chatgpt.com/backend-api",
+        strip_model_prefix=False,
+        model_overrides=(),
+        is_oauth=True,
+        oauth_provider="openai-codex",
     ),
 
     # DeepSeek: needs "deepseek/" prefix for LiteLLM routing.
@@ -327,7 +351,7 @@ def find_by_model(model: str) -> ProviderSpec | None:
     Skips gateways/local — those are matched by api_key/api_base instead."""
     model_lower = model.lower()
     for spec in PROVIDERS:
-        if spec.is_gateway or spec.is_local:
+        if spec.is_gateway or spec.is_local or spec.is_oauth:
             continue
         if any(kw in model_lower for kw in spec.keywords):
             return spec

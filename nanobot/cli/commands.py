@@ -195,6 +195,26 @@ def onboard():
     console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
 
 
+@app.command("login")
+def login(
+    provider: str = typer.Option("openai-codex", "--provider", "-p", help="OAuth provider"),
+):
+    """Login to an OAuth provider (currently openai-codex)."""
+    normalized = provider.strip().lower().replace("_", "-")
+    if normalized != "openai-codex":
+        console.print(f"[red]Unsupported provider: {provider}[/red]")
+        raise typer.Exit(1)
+
+    from oauth_cli_kit import login_oauth_interactive
+
+    console.print("[green]Starting OpenAI Codex OAuth login...[/green]")
+    login_oauth_interactive(
+        print_fn=console.print,
+        prompt_fn=typer.prompt,
+    )
+    console.print("[green]Login successful. Credentials saved.[/green]")
+
+
 
 
 def _create_workspace_templates(workspace: Path):
@@ -279,10 +299,41 @@ This file stores important information that should persist across sessions.
 
 
 def _make_provider(config):
-    """Create LiteLLMProvider from config. Exits if no API key found."""
+    """Create provider from config. Exits if no credentials found."""
     from nanobot.providers.litellm_provider import LiteLLMProvider
-    p = config.get_provider()
+    from nanobot.providers.openai_codex_provider import OpenAICodexProvider
+    from nanobot.providers.registry import PROVIDERS
+    from oauth_cli_kit import get_token as get_oauth_token
+
     model = config.agents.defaults.model
+    model_lower = model.lower()
+
+    # OAuth-based providers are selected by model keyword.
+    for spec in PROVIDERS:
+        if not spec.is_oauth:
+            continue
+        if not any(kw in model_lower for kw in spec.keywords):
+            continue
+
+        oauth_name = spec.oauth_provider or spec.name
+        if oauth_name != "openai-codex":
+            console.print(f"[red]Error: OAuth provider '{spec.label}' is not implemented yet.[/red]")
+            raise typer.Exit(1)
+
+        try:
+            _ = get_oauth_token()
+        except Exception:
+            console.print(f"Please run: [cyan]nanobot login --provider {oauth_name}[/cyan]")
+            raise typer.Exit(1)
+
+        provider_config = getattr(config.providers, spec.name, None)
+        api_base = provider_config.api_base if provider_config else None
+        return OpenAICodexProvider(
+            default_model=model,
+            api_base=api_base or spec.default_api_base,
+        )
+
+    p = config.get_provider()
     if not (p and p.api_key) and not model.startswith("bedrock/"):
         console.print("[red]Error: No API key configured.[/red]")
         console.print("Set one in ~/.nanobot/config.json under providers section")
@@ -843,6 +894,7 @@ def cron_run(
 def status():
     """Show nanobot status."""
     from nanobot.config.loader import load_config, get_config_path
+    from oauth_cli_kit import get_token as get_oauth_token
 
     config_path = get_config_path()
     config = load_config()
@@ -863,7 +915,17 @@ def status():
             p = getattr(config.providers, spec.name, None)
             if p is None:
                 continue
-            if spec.is_local:
+            if spec.is_oauth:
+                oauth_name = spec.oauth_provider or spec.name
+                if oauth_name != "openai-codex":
+                    console.print(f"{spec.label}: [yellow]OAuth provider unsupported[/yellow]")
+                    continue
+                try:
+                    _ = get_oauth_token()
+                    console.print(f"{spec.label}: [green]logged in[/green]")
+                except Exception:
+                    console.print(f"{spec.label}: [dim]not logged in[/dim]")
+            elif spec.is_local:
                 # Local deployments show api_base instead of api_key
                 if p.api_base:
                     console.print(f"{spec.label}: [green]✓ {p.api_base}[/green]")
