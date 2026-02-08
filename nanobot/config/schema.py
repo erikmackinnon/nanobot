@@ -90,6 +90,7 @@ class ProvidersConfig(BaseModel):
     gemini: ProviderConfig = Field(default_factory=ProviderConfig)
     moonshot: ProviderConfig = Field(default_factory=ProviderConfig)
     aihubmix: ProviderConfig = Field(default_factory=ProviderConfig)  # AiHubMix API gateway
+    openai_codex: ProviderConfig = Field(default_factory=ProviderConfig)  # OpenAI Codex (OAuth)
 
 
 class GatewayConfig(BaseModel):
@@ -142,10 +143,12 @@ class Config(BaseSettings):
         # Match by keyword (order follows PROVIDERS registry)
         for spec in PROVIDERS:
             p = getattr(self.providers, spec.name, None)
-            if p and any(kw in model_lower for kw in spec.keywords) and p.api_key:
-                return p, spec.name
+            if p and any(kw in model_lower for kw in spec.keywords):
+                if spec.is_oauth or p.api_key:
+                    return p, spec.name
 
-        # Fallback: gateways first, then others (follows registry order)
+        # Fallback: gateways first, then others (follows registry order).
+        # OAuth providers are intentionally not used as a generic fallback.
         for spec in PROVIDERS:
             p = getattr(self.providers, spec.name, None)
             if p and p.api_key:
