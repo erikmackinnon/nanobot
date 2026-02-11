@@ -91,7 +91,8 @@ def _enable_line_editing() -> None:
     except Exception:
         pass
 
-    history_file = Path.home() / ".nanobot" / "history" / "cli_history"
+    from nanobot.utils.helpers import get_data_path
+    history_file = get_data_path() / "history" / "cli_history"
     history_file.parent.mkdir(parents=True, exist_ok=True)
     _HISTORY_FILE = history_file
 
@@ -151,9 +152,16 @@ def main(
     version: bool = typer.Option(
         None, "--version", "-v", callback=version_callback, is_eager=True
     ),
+    data_path: Path | None = typer.Option(
+        None, "--data-path", "-d",
+        help="Custom data directory (default: ~/.nanobot)",
+        dir_okay=True, file_okay=False, resolve_path=True,
+    ),
 ):
     """nanobot - Personal AI Assistant."""
-    pass
+    if data_path:
+        from nanobot.utils.helpers import set_data_path
+        set_data_path(data_path)
 
 
 # ============================================================================
@@ -166,17 +174,22 @@ def onboard():
     """Initialize nanobot configuration and workspace."""
     from nanobot.config.loader import get_config_path, save_config
     from nanobot.config.schema import Config
-    from nanobot.utils.helpers import get_workspace_path
-    
+    from nanobot.utils.helpers import get_workspace_path, get_data_path, _data_path_override
+
     config_path = get_config_path()
-    
+
     if config_path.exists():
         console.print(f"[yellow]Config already exists at {config_path}[/yellow]")
         if not typer.confirm("Overwrite?"):
             raise typer.Exit()
-    
+
     # Create default config
     config = Config()
+
+    # If using custom data path, update workspace in config
+    if _data_path_override is not None:
+        config.agents.defaults.workspace = str(get_data_path() / "workspace")
+
     save_config(config)
     console.print(f"[green]✓[/green] Created config at {config_path}")
     
@@ -189,7 +202,7 @@ def onboard():
     
     console.print(f"\n{__logo__} nanobot is ready!")
     console.print("\nNext steps:")
-    console.print("  1. Add your API key to [cyan]~/.nanobot/config.json[/cyan]")
+    console.print(f"  1. Add your API key to [cyan]{config_path}[/cyan]")
     console.print("     Get one at: https://openrouter.ai/keys")
     console.print("  2. Chat: [cyan]nanobot agent -m \"Hello!\"[/cyan]")
     console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
@@ -294,8 +307,8 @@ def _make_provider(config):
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
     from nanobot.providers.registry import PROVIDERS
+    from nanobot.config.loader import get_config_path
     from oauth_cli_kit import get_token as get_oauth_token
-
     model = config.agents.defaults.model
     model_lower = model.lower()
 
@@ -327,7 +340,7 @@ def _make_provider(config):
     p = config.get_provider()
     if not (p and p.api_key) and not model.startswith("bedrock/"):
         console.print("[red]Error: No API key configured.[/red]")
-        console.print("Set one in ~/.nanobot/config.json under providers section")
+        console.print(f"Set one in {get_config_path()} under providers section")
         raise typer.Exit(1)
     return LiteLLMProvider(
         api_key=p.api_key if p else None,
@@ -574,9 +587,10 @@ def _get_bridge_dir() -> Path:
     """Get the bridge directory, setting it up if needed."""
     import shutil
     import subprocess
-    
+    from nanobot.utils.helpers import get_data_path
+
     # User's bridge location
-    user_bridge = Path.home() / ".nanobot" / "bridge"
+    user_bridge = get_data_path() / "bridge"
     
     # Check if already built
     if (user_bridge / "dist" / "index.js").exists():
