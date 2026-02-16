@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import re
+<<<<<<< HEAD
+=======
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
+>>>>>>> 82f9218 (WIP: local changes before fork setup)
 from loguru import logger
-from telegram import BotCommand, Update
+from telegram import BotCommand, Message, MessageEntity, Update, User
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
 
@@ -106,6 +112,8 @@ class TelegramChannel(BaseChannel):
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
+        self._bot_id: int | None = None
+        self._bot_username: str | None = None
     
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
@@ -145,6 +153,8 @@ class TelegramChannel(BaseChannel):
         
         # Get bot info and register command menu
         bot_info = await self._app.bot.get_me()
+        self._bot_id = bot_info.id
+        self._bot_username = bot_info.username.lower() if bot_info.username else None
         logger.info(f"Telegram bot @{bot_info.username} connected")
         
         try:
@@ -214,9 +224,15 @@ class TelegramChannel(BaseChannel):
         """Handle /start command."""
         if not update.message or not update.effective_user:
             return
-        
+
+        message = update.message
         user = update.effective_user
-        await update.message.reply_text(
+        if not self._should_process_message(message):
+            return
+        if not self.is_allowed(self._build_sender_id(user)):
+            return
+
+        await message.reply_text(
             f"👋 Hi {user.first_name}! I'm nanobot.\n\n"
             "Send me a message and I'll respond!\n"
             "Type /help to see available commands."
@@ -226,11 +242,58 @@ class TelegramChannel(BaseChannel):
         """Forward slash commands to the bus for unified handling in AgentLoop."""
         if not update.message or not update.effective_user:
             return
+<<<<<<< HEAD
         await self._handle_message(
             sender_id=str(update.effective_user.id),
             chat_id=str(update.message.chat_id),
             content=update.message.text,
         )
+=======
+
+        message = update.message
+        user = update.effective_user
+        if not self._should_process_message(message):
+            return
+        if not self.is_allowed(self._build_sender_id(user)):
+            return
+
+        chat_id = str(message.chat_id)
+        session_key = f"{self.name}:{chat_id}"
+        
+        if self.session_manager is None:
+            logger.warning("/reset called but session_manager is not available")
+            await message.reply_text("⚠️ Session management is not available.")
+            return
+        
+        session = self.session_manager.get_or_create(session_key)
+        msg_count = len(session.messages)
+        session.clear()
+        self.session_manager.save(session)
+        
+        logger.info(f"Session reset for {session_key} (cleared {msg_count} messages)")
+        await message.reply_text("🔄 Conversation history cleared. Let's start fresh!")
+    
+    async def _on_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /help command — show available commands."""
+        if not update.message or not update.effective_user:
+            return
+
+        message = update.message
+        user = update.effective_user
+        if not self._should_process_message(message):
+            return
+        if not self.is_allowed(self._build_sender_id(user)):
+            return
+
+        help_text = (
+            "🐈 <b>nanobot commands</b>\n\n"
+            "/start — Start the bot\n"
+            "/reset — Reset conversation history\n"
+            "/help — Show this help message\n\n"
+            "Just send me a text message to chat!"
+        )
+        await message.reply_text(help_text, parse_mode="HTML")
+>>>>>>> 82f9218 (WIP: local changes before fork setup)
     
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming messages (text, photos, voice, documents)."""
@@ -239,12 +302,22 @@ class TelegramChannel(BaseChannel):
         
         message = update.message
         user = update.effective_user
+
+        if not self._should_process_message(message):
+            return
+
         chat_id = message.chat_id
         
         # Use stable numeric ID, but keep username for allowlist compatibility
-        sender_id = str(user.id)
-        if user.username:
-            sender_id = f"{sender_id}|{user.username}"
+        sender_id = self._build_sender_id(user)
+
+        # Skip unauthorized senders early to avoid media downloads and stale typing indicators.
+        if not self.is_allowed(sender_id):
+            logger.warning(
+                f"Access denied for sender {sender_id} on channel {self.name}. "
+                f"Add them to allowFrom list in config to grant access."
+            )
+            return
         
         # Store chat_id for replies
         self._chat_ids[sender_id] = chat_id
@@ -333,6 +406,71 @@ class TelegramChannel(BaseChannel):
                 "is_group": message.chat.type != "private"
             }
         )
+
+    def _build_sender_id(self, user: User) -> str:
+        """Use stable numeric ID, keeping username for allowlist compatibility."""
+        sender_id = str(user.id)
+        if user.username:
+            sender_id = f"{sender_id}|{user.username}"
+        return sender_id
+
+    def _should_process_message(self, message: Message) -> bool:
+        """Limit group chatter: only process DMs, mentions, or replies to the bot."""
+        chat_type = message.chat.type
+        if chat_type == "private":
+            return True
+        if chat_type not in {"group", "supergroup"}:
+            return True
+        return self._is_reply_to_bot(message) or self._has_bot_mention(message)
+
+    def _is_reply_to_bot(self, message: Message) -> bool:
+        """Return True when message is a direct reply to a bot-authored message."""
+        if self._bot_id is None or not message.reply_to_message:
+            return False
+        reply_from = message.reply_to_message.from_user
+        return bool(reply_from and reply_from.id == self._bot_id)
+
+    def _has_bot_mention(self, message: Message) -> bool:
+        """Return True when text/caption mentions @botusername or text_mention targets this bot."""
+        if not self._bot_username and self._bot_id is None:
+            return False
+
+        if self._bot_username:
+            mention_token = f"@{self._bot_username}"
+            for source in (message.text, message.caption):
+                if source and mention_token in source.lower():
+                    return True
+
+            if self._entity_mentions_username(message.text, message.entities):
+                return True
+            if self._entity_mentions_username(message.caption, message.caption_entities):
+                return True
+
+        for entities in (message.entities, message.caption_entities):
+            if not entities:
+                continue
+            for entity in entities:
+                if entity.type == "text_mention" and entity.user and entity.user.id == self._bot_id:
+                    return True
+
+        return False
+
+    def _entity_mentions_username(
+        self,
+        source: str | None,
+        entities: Sequence[MessageEntity] | None,
+    ) -> bool:
+        """Parse mention entities and verify one targets this bot username."""
+        if not source or not entities or not self._bot_username:
+            return False
+
+        for entity in entities:
+            if entity.type != "mention":
+                continue
+            mention_text = source[entity.offset:entity.offset + entity.length]
+            if mention_text.lstrip("@").lower() == self._bot_username:
+                return True
+        return False
     
     def _start_typing(self, chat_id: str) -> None:
         """Start sending 'typing...' indicator for a chat."""
